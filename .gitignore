@@ -1,0 +1,38 @@
+# Runtime data
+downloads/*
+!downloads/.gitkeep
+work/*
+!work/.gitkeep
+cookies.txt
+*.log
+
+# Third-party runtime dependency (start.bat installs it on first run)
+vendor/
+
+# Build/package artifacts
+YT-Grab.zip
+*.zip
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+pip-temp/
+.tmp/
+yttemp/
+test700/
+tmp*/
+edge-profile*/
+shot-*.png
+
+# Local artifacts
+test-*.json
+test-*.err
+info-test*.json

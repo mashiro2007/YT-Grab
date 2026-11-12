@@ -1,0 +1,5 @@
+# Development-only convenience file.
+# The desktop app already includes yt-dlp in vendor/, so this is not
+# required for normal use. Install with:
+#   python -m pip install --target vendor yt-dlp
+yt-dlp>=2026.10.26
