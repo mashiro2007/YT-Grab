@@ -25,11 +25,12 @@ from ytdl_core import (
     extract_info,
     fetch_thumbnail,
     ffmpeg_health,
+    find_ffmpeg,
     parse_youtube_url,
     ytdlp_health,
 )
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.2.1"
 STATIC_FILES = {
     "/static/style.css": ("style.css", "text/css; charset=utf-8"),
     "/static/app.js": ("app.js", "text/javascript; charset=utf-8"),
@@ -144,10 +145,23 @@ class AppHandler(BaseHTTPRequestHandler):
             "download_dir": str(DOWNLOAD_DIR),
         }
 
+    @staticmethod
+    def _clean_language_codes(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        codes: list[str] = []
+        for item in value:
+            code = str(item or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,35}", code):
+                continue
+            if code not in codes:
+                codes.append(code)
+        return codes
+
     def _start_download(self, body: dict[str, Any]) -> None:
         video_id, canonical = parse_youtube_url(str(body.get("url") or ""))
         kind = str(body.get("kind") or "")
-        if kind not in {"video", "audio", "thumbnail", "muted"}:
+        if kind not in {"video", "audio", "thumbnail", "muted", "subtitle"}:
             raise UserError("未知的下载类型。")
         if kind == "video" and bool(body.get("muted")):
             kind = "muted"
@@ -181,6 +195,39 @@ class AppHandler(BaseHTTPRequestHandler):
                 if quality not in AUDIO_QUALITIES:
                     quality = 192
                 options["audio_quality"] = quality
+
+        if kind == "subtitle":
+            languages = self._clean_language_codes(body.get("languages"))
+            if not languages:
+                raise UserError("请至少选择一种字幕语言。")
+            if len(languages) > 20:
+                raise UserError("一次最多下载 20 种字幕语言。")
+            manual_languages = [
+                code for code in self._clean_language_codes(body.get("manual_languages"))
+                if code in languages
+            ]
+            auto_languages = [
+                code for code in self._clean_language_codes(body.get("auto_languages"))
+                if code in languages and code not in manual_languages
+            ]
+            if not manual_languages and not auto_languages:
+                raise UserError("字幕语言参数无效。", "请重新解析视频后再试。")
+            subtitle_format = str(body.get("subtitle_format") or "srt").lower()
+            if subtitle_format not in {"srt", "vtt"}:
+                raise UserError("字幕格式无效。")
+            if not find_ffmpeg()[0]:
+                raise UserError(
+                    "字幕格式转换需要 FFmpeg。",
+                    "请先安装 FFmpeg，或把 ffmpeg.exe 放到程序目录的 bin 文件夹。",
+                )
+            options.update(
+                {
+                    "languages": languages,
+                    "manual_languages": manual_languages,
+                    "auto_languages": auto_languages,
+                    "subtitle_format": subtitle_format,
+                }
+            )
 
         if kind == "thumbnail":
             quality = str(body.get("thumb_quality") or "maxres")

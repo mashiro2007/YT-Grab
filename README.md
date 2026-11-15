@@ -1,10 +1,11 @@
-# YT Grab · YouTube 视频 / 音频 / 封面下载器
+# YT Grab · YouTube 视频下载器
 
 一个在**本机运行**的 YouTube 下载工具。粘贴一个视频链接，即可：
 
 - 按实际可用分辨率下载视频（144p / 360p / 720p / 1080p / 1440p / 4K / 8K）；
 - 自动合并画面与音轨，默认输出兼容性更好的 MP4；
 - 单独提取音频，支持 MP3、M4A、Opus、WAV 和「原始音轨不转码」；
+- 下载**多语言字幕**，支持人工字幕、自动字幕和自动翻译，输出 SRT / VTT；
 - 单独下载视频封面，支持最高清、高清、标准、小图四种尺寸；
 - 下载**无声视频**（仅画面，不含音轨）；
 - 在页面内查看实时进度、速度、剩余时间，支持取消任务；
@@ -24,7 +25,7 @@
 | --- | --- | --- |
 | Windows | Windows 10 / 11 | 其他系统也可运行，但启动脚本针对 Windows 编写 |
 | Python | 3.11 或更高版本 | 安装时勾选 **Add Python to PATH** |
-| FFmpeg | 需要 | 用于合并 1080p 以上视频、转换音频格式 |
+| FFmpeg | 需要 | 用于合并 1080p 以上视频、转换音频/字幕格式 |
 | yt-dlp | 首次启动自动安装 | 安装到 `vendor/yt_dlp`，不需要手动处理 |
 
 ### 启动
@@ -32,7 +33,7 @@
 1. 双击 **`start.bat`**。如果从 GitHub 源码运行且没有 `vendor` 目录，首次启动会自动联网安装 yt-dlp（约几 MB）；完整压缩包已包含该依赖，会直接启动。
 2. 程序会自动打开浏览器，地址通常是 <http://127.0.0.1:8765>。
 3. 粘贴 YouTube 链接 → 点击「解析视频」。
-4. 在视频 / 音频 / 封面三张卡片中选择参数，点击对应的下载按钮。
+4. 在视频 / 音频 / 封面 / 字幕卡片中选择参数，点击对应的下载按钮。
 5. 在「下载队列」查看进度；完成后点击文件夹图标定位文件。
 
 > 启动窗口会一直保持打开，关闭窗口或按 `Ctrl+C` 即停止服务。若启动失败，窗口会停留并显示错误码，不会一闪而过。
@@ -55,7 +56,7 @@ yt_download\bin\ffmpeg.exe
 
 程序会自动识别 PATH 中的 FFmpeg、Winget 安装目录以及 `bin\ffmpeg.exe`。安装后重启 `start.bat`。
 
-没有 FFmpeg 时仍可下载封面和「仅画面」视频，但无法合并音轨、提取音频。
+没有 FFmpeg 时仍可下载封面和「仅画面」视频，但无法合并音轨、提取音频或转换字幕格式。
 
 ---
 
@@ -88,6 +89,24 @@ yt_download\bin\ffmpeg.exe
 | WAV | 无损容器，文件很大，适合后期处理 |
 | 原始音轨 | 不转码，保留 YouTube 提供的最佳音频流（通常是 Opus / AAC） |
 
+### 字幕
+
+字幕卡片会列出视频可用的语言：
+
+- **人工字幕**：视频上传者提供的字幕，优先显示。
+- **自动字幕**：YouTube 语音识别生成的字幕。
+- **自动翻译**：自动字幕的翻译版本，数量可能上百种；默认隐藏，可勾选「显示自动翻译」或直接搜索语言名/语言代码。
+- 支持一次勾选多种语言，最多 20 种。
+- 输出格式可选 **SRT** 或 **VTT**，需要 FFmpeg 转换。
+- 文件按语言分别保存，例如：
+
+```text
+视频标题 [视频ID].en.srt
+视频标题 [视频ID].zh-Hans.srt
+```
+
+> 如果部分语言被 YouTube 限流（HTTP 429），已经成功下载的语言会保留，队列会显示“部分完成”的提示。可以等待几分钟后减少语言数量重试。
+
 ### 封面
 
 默认选择「最高清」。YouTube 的 `maxresdefault` 封面并非每个视频都有，程序会自动按以下顺序降级：
@@ -107,6 +126,7 @@ yt_download\bin\ffmpeg.exe
 - 默认目录：`downloads\`
 - 视频：`视频标题 [视频ID] - 1080p.mp4`
 - 音频：`视频标题 [视频ID].mp3`
+- 字幕：`视频标题 [视频ID].en.srt`
 - 封面：`视频标题 [视频ID] - cover.jpg`
 - 同名文件已存在时自动添加 `(2)`、`(3)`，不会覆盖旧文件。
 
@@ -236,7 +256,23 @@ yt_download/
 }
 ```
 
-`kind` 可为 `video`、`audio`、`thumbnail`。音频额外传 `audio_format` 和 `audio_quality`，封面传 `thumb_quality`。
+`kind` 可为 `video`、`audio`、`thumbnail`、`subtitle`。音频额外传 `audio_format` 和 `audio_quality`，封面传 `thumb_quality`。
+
+字幕请求示例：
+
+```json
+{
+  "url": "https://www.youtube.com/watch?v=XXXXXXXXXXX",
+  "title": "视频标题",
+  "kind": "subtitle",
+  "languages": ["en", "zh-Hans"],
+  "manual_languages": ["en"],
+  "auto_languages": ["zh-Hans"],
+  "subtitle_format": "srt"
+}
+```
+
+`languages` 是全部选中的语言，`manual_languages` 和 `auto_languages` 用于区分人工/自动字幕。可先调用 `/api/info`，读取返回的 `subtitle_languages` 获得语言代码。
 
 ---
 

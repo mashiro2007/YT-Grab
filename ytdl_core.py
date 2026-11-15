@@ -410,6 +410,12 @@ def friendly_error(raw: str) -> UserError:
             "安装 FFmpeg 并加入 PATH，或把 ffmpeg.exe 放到程序目录的 bin 文件夹。",
             tail_lines(text),
         )
+    if "http error 429" in lower or "too many requests" in lower:
+        return UserError(
+            "请求过于频繁，YouTube 暂时限制了字幕下载（HTTP 429）。",
+            "等待几分钟后重试，并减少一次选择的语言数量；如果经常出现，可配置浏览器 Cookie。",
+            tail_lines(text),
+        )
     if "http error 403" in lower or "forbidden" in lower:
         return UserError(
             "YouTube 拒绝了媒体请求（HTTP 403）。",
@@ -473,6 +479,50 @@ def _format_size(fmt: dict[str, Any]) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+_SUBTITLE_CODE_RE = re.compile(r"^[A-Za-z0-9_-]{1,35}$")
+
+
+def _subtitle_track_map(value: Any) -> dict[str, list[dict[str, Any]]]:
+    """Normalise yt-dlp's ``subtitles`` / ``automatic_captions`` maps."""
+    if not isinstance(value, dict):
+        return {}
+    tracks: dict[str, list[dict[str, Any]]] = {}
+    for raw_code, entries in value.items():
+        code = str(raw_code or "")
+        if code in {"live_chat", "rechat"} or not _SUBTITLE_CODE_RE.match(code):
+            continue
+        if isinstance(entries, list) and entries:
+            tracks[code] = [entry for entry in entries if isinstance(entry, dict)]
+    return tracks
+
+
+def build_subtitle_languages(info: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return a compact manual/automatic subtitle language catalogue.
+
+    Automatic translations are marked so the UI can hide the hundreds of
+    translated variants until the user asks for them.
+    """
+    manual = _subtitle_track_map(info.get("subtitles"))
+    automatic = _subtitle_track_map(info.get("automatic_captions"))
+    languages: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for code in manual:
+        if code in seen:
+            continue
+        seen.add(code)
+        languages.append({"code": code, "kind": "manual", "translated": False})
+
+    for code in automatic:
+        if code in seen:
+            continue
+        seen.add(code)
+        translated = bool(re.search(r"-[a-z]{2,3}$", code)) and not code.endswith("-orig")
+        languages.append({"code": code, "kind": "auto", "translated": translated})
+
+    return languages
 
 
 def build_public_info(info: dict[str, Any]) -> dict[str, Any]:
@@ -563,6 +613,8 @@ def build_public_info(info: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError):
             return 0
 
+    subtitle_languages = build_subtitle_languages(info)
+
     return {
         "id": video_id,
         "url": f"https://www.youtube.com/watch?v={video_id}",
@@ -584,6 +636,8 @@ def build_public_info(info: dict[str, Any]) -> dict[str, Any]:
             "ext": str(best_audio.get("ext") or "") if best_audio else "",
             "abr": round(float(best_audio.get("abr") or best_audio.get("tbr") or 0), 1) if best_audio else 0,
         },
+        "subtitle_languages": subtitle_languages,
+        "subtitle_count": len(subtitle_languages),
         "is_live": bool(info.get("is_live")),
         "was_live": bool(info.get("was_live")),
     }
@@ -801,6 +855,7 @@ class Job:
         self.error = ""
         self.error_hint = ""
         self.error_detail = ""
+        self.warning = ""
         self.created_at = now_iso()
         self.created_ts = time.time()
         self.finished_at = ""
@@ -837,6 +892,7 @@ class Job:
             "error": self.error,
             "error_hint": self.error_hint,
             "error_detail": self.error_detail,
+            "warning": self.warning,
             "created_at": self.created_at,
             "finished_at": self.finished_at,
         }
@@ -856,6 +912,10 @@ def build_spec(kind: str, options: dict[str, Any]) -> str:
             return "原始音轨"
         quality = options.get("audio_quality")
         return f"{fmt.upper()}" + (f" · {quality} kbps" if quality else "")
+    if kind == "subtitle":
+        languages = options.get("languages") or []
+        subtitle_format = str(options.get("subtitle_format", "srt")).upper()
+        return f"字幕 · {len(languages)} 种语言 · {subtitle_format}"
     if kind == "thumbnail":
         quality = str(options.get("thumb_quality", "maxres"))
         config = THUMB_QUALITIES.get(quality, THUMB_QUALITIES["maxres"])
@@ -863,8 +923,7 @@ def build_spec(kind: str, options: dict[str, Any]) -> str:
     return ""
 
 
-def build_download_command(job: Job, staging: Path) -> list[str]:
-    options = job.options
+def _download_base_command(staging: Path) -> list[str]:
     ffmpeg, _ = find_ffmpeg()
     cmd = ytdlp_command() + [
         "--newline",
@@ -880,6 +939,53 @@ def build_download_command(job: Job, staging: Path) -> list[str]:
     ]
     if ffmpeg:
         cmd.extend(["--ffmpeg-location", str(ffmpeg)])
+    return cmd
+
+
+def build_subtitle_commands(job: Job, staging: Path) -> list[list[str]]:
+    options = job.options
+    manual = [str(code) for code in (options.get("manual_languages") or [])]
+    auto = [str(code) for code in (options.get("auto_languages") or [])]
+    if not manual and not auto:
+        raise UserError("没有选择字幕语言。")
+
+    subtitle_format = str(options.get("subtitle_format", "srt")).lower()
+    if subtitle_format not in {"srt", "vtt"}:
+        subtitle_format = "srt"
+    if not find_ffmpeg()[0]:
+        raise UserError("字幕格式转换需要 FFmpeg。", "请先安装 FFmpeg，或把 ffmpeg.exe 放到程序目录的 bin 文件夹。")
+
+    template = "%(title).150B [%(id)s].%(ext)s"
+    common = _download_base_command(staging) + [
+        "--skip-download",
+        "--sub-format",
+        "vtt/best",
+        "--convert-subs",
+        subtitle_format,
+        "-o",
+        template,
+    ]
+
+    def language_pattern(codes: list[str]) -> str:
+        return "^(?:" + "|".join(re.escape(code) for code in codes) + ")$"
+
+    commands: list[list[str]] = []
+    if manual:
+        commands.append(
+            common
+            + ["--write-subs", "--sub-langs", language_pattern(manual), job.url]
+        )
+    if auto:
+        commands.append(
+            common
+            + ["--write-auto-subs", "--sub-langs", language_pattern(auto), job.url]
+        )
+    return commands
+
+
+def build_download_command(job: Job, staging: Path) -> list[str]:
+    options = job.options
+    cmd = _download_base_command(staging)
 
     if job.kind in ("video", "muted"):
         template = "%(title).150B [%(id)s] - %(height)sp.%(ext)s"
@@ -920,6 +1026,12 @@ def build_download_command(job: Job, staging: Path) -> list[str]:
 
     cmd.append(job.url)
     return cmd
+
+
+def build_download_commands(job: Job, staging: Path) -> list[list[str]]:
+    if job.kind == "subtitle":
+        return build_subtitle_commands(job, staging)
+    return [build_download_command(job, staging)]
 
 
 class DownloadManager:
@@ -1078,7 +1190,42 @@ class DownloadManager:
                 return
             job.status = "downloading"
             job.progress = 0
-        cmd = build_download_command(job, staging)
+        commands = build_download_commands(job, staging)
+        errors: list[UserError] = []
+        for index, command in enumerate(commands):
+            with self._lock:
+                if job.cancel_requested:
+                    self._mark_cancelled(job)
+                    return
+            returncode = self._execute_ytdlp_command(job, command)
+            if job.cancel_requested:
+                self._mark_cancelled(job)
+                return
+            if returncode != 0:
+                error = friendly_error(job.tail_text() or f"yt-dlp 退出码 {returncode}")
+                errors.append(error)
+                if len(commands) == 1:
+                    raise error
+            with self._lock:
+                if len(commands) > 1:
+                    job.progress = min(90.0, 20.0 + (index + 1) * (60.0 / len(commands)))
+
+        files = move_results(staging, DOWNLOAD_DIR)
+        if not files:
+            if errors:
+                raise errors[0]
+            raise UserError("下载完成但没有找到输出文件。", "请检查下载目录，或更新 yt-dlp 后重试。", job.tail_text())
+        primary = max(files, key=lambda item: item.get("size", 0))
+        with self._lock:
+            job.files = files
+            job.filename = primary["name"]
+            job.status = "completed"
+            job.progress = 100
+            job.eta = 0
+            job.warning = "；".join(error.message for error in errors)
+            job.finished_at = now_iso()
+
+    def _execute_ytdlp_command(self, job: Job, cmd: list[str]) -> int:
         try:
             process = subprocess.Popen(
                 cmd,
@@ -1106,24 +1253,7 @@ class DownloadManager:
 
         with self._lock:
             job.process = None
-        if job.cancel_requested:
-            self._mark_cancelled(job)
-            return
-        if returncode != 0:
-            detail = job.tail_text()
-            raise friendly_error(detail or f"yt-dlp 退出码 {returncode}")
-
-        files = move_results(staging, DOWNLOAD_DIR)
-        if not files:
-            raise UserError("下载完成但没有找到输出文件。", "请检查下载目录，或更新 yt-dlp 后重试。", job.tail_text())
-        primary = max(files, key=lambda item: item.get("size", 0))
-        with self._lock:
-            job.files = files
-            job.filename = primary["name"]
-            job.status = "completed"
-            job.progress = 100
-            job.eta = 0
-            job.finished_at = now_iso()
+        return returncode
 
     def _handle_output(self, job: Job, line: str) -> None:
         line = line.replace("\r", "").strip()
@@ -1158,7 +1288,7 @@ class DownloadManager:
             return
 
         lower = line.lower()
-        if any(token in lower for token in ("[merger]", "[extractaudio]", "[videoconvertor]", "[fixupm3u8]", "[fixupm4a]")):
+        if any(token in lower for token in ("[merger]", "[extractaudio]", "[videoconvertor]", "[subtitlesconvertor]", "[fixupm3u8]", "[fixupm4a]")):
             with self._lock:
                 if job.status == "downloading":
                     job.status = "processing"

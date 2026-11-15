@@ -21,6 +21,7 @@ const ICONS = {
   audio: '<svg viewBox="0 0 24 24" fill="none"><path d="M9 17.5V6.8l9-2v10.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><ellipse cx="6.9" cy="17.6" rx="2.7" ry="2.3" stroke="currentColor" stroke-width="1.7"/><ellipse cx="15.9" cy="15.4" rx="2.7" ry="2.3" stroke="currentColor" stroke-width="1.7"/></svg>',
   thumbnail: '<svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="3" stroke="currentColor" stroke-width="1.7"/><circle cx="8.5" cy="9" r="1.6" fill="currentColor"/><path d="m5.5 17 4.2-4.6 3 3.1 2.2-2.4 3.6 3.9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   muted: '<svg viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="14" rx="3" stroke="currentColor" stroke-width="1.7"/><path d="m10.3 9.3 4.6 2.7-4.6 2.7V9.3Z" fill="currentColor"/><path d="m16.3 8.4 4 7.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  subtitle: '<svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4.5" width="18" height="15" rx="3" stroke="currentColor" stroke-width="1.7"/><path d="M6.5 9.5h4.2M6.5 13h7.2M6.5 16.5h3.2M14.6 9.5h2.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
   download: '<svg viewBox="0 0 24 24" fill="none"><path d="M12 4v11m0 0 4-4m-4 4-4-4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 19h14" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>',
   folder: '<svg viewBox="0 0 24 24" fill="none"><path d="M3.5 7.5A1.8 1.8 0 0 1 5.3 5.7h4l2 2h7.4a1.8 1.8 0 0 1 1.8 1.8v7.2a1.8 1.8 0 0 1-1.8 1.8H5.3a1.8 1.8 0 0 1-1.8-1.8V7.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>',
   cancel: '<svg viewBox="0 0 24 24" fill="none"><path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
@@ -42,6 +43,9 @@ function init() {
     "ytLink", "mediaId", "videoHeight", "videoFormatHint", "compatToggle", "mutedToggle",
     "videoDownloadBtn", "audioFormat", "audioQuality", "bitrateField", "audioHint",
     "audioDownloadBtn", "coverQuality", "coverMini", "coverDownloadBtn", "ffmpegNote",
+    "subtitleSearch", "subtitleLanguages", "subtitleNoMatch", "subtitleShowTranslated",
+    "subtitleTranslatedWrap", "subtitleTranslatedCount", "subtitleSelectedCount",
+    "subtitleSummary", "subtitleFormat", "subtitleDownloadBtn",
     "queueList", "jobCount", "openFolderBtn", "toastStack", "helpBtn", "helpDialog",
     "helpClose", "cookieStatus", "engineChip", "engineText",
   ].forEach((id) => { els[id] = $(id); });
@@ -66,6 +70,19 @@ function init() {
   els.videoDownloadBtn.addEventListener("click", () => startDownload("video"));
   els.audioDownloadBtn.addEventListener("click", () => startDownload("audio"));
   els.coverDownloadBtn.addEventListener("click", () => startDownload("thumbnail"));
+  els.subtitleDownloadBtn.addEventListener("click", () => startDownload("subtitle"));
+  els.subtitleSearch.addEventListener("input", filterSubtitleLanguages);
+  els.subtitleShowTranslated.addEventListener("change", () => {
+    if (!els.subtitleShowTranslated.checked) {
+      for (const checkbox of els.subtitleLanguages.querySelectorAll('input[data-translated="1"]')) {
+        checkbox.checked = false;
+      }
+    }
+    filterSubtitleLanguages();
+    updateSubtitleSummary();
+  });
+  els.subtitleLanguages.addEventListener("change", updateSubtitleSummary);
+  els.subtitleFormat.addEventListener("change", updateSubtitleSummary);
   els.openFolderBtn.addEventListener("click", () => openFolder(""));
   els.queueList.addEventListener("click", onQueueClick);
   els.helpBtn.addEventListener("click", () => {
@@ -168,7 +185,7 @@ async function parseVideo() {
     els.result.classList.remove("reveal");
     void els.result.offsetWidth;
     els.result.classList.add("reveal");
-    els.parseStatus.textContent = `解析完成，找到 ${info.resolutions?.length || 0} 种视频清晰度和 ${info.thumbnails?.length || 0} 种封面尺寸。`;
+    els.parseStatus.textContent = `解析完成，找到 ${info.resolutions?.length || 0} 种视频清晰度、${info.thumbnails?.length || 0} 种封面尺寸和 ${info.subtitle_count || 0} 种字幕语言。`;
     if (state.parseStatusTimer) window.clearTimeout(state.parseStatusTimer);
     state.parseStatusTimer = window.setTimeout(() => { els.parseStatus.hidden = true; }, 3200);
     window.setTimeout(() => {
@@ -217,6 +234,7 @@ function renderInfo(info) {
   if (info.view_count > 0) appendMeta(ICONS.eye, `${formatNumber(info.view_count)} 次观看`);
   if (info.like_count > 0) appendMeta(ICONS.check, `${formatNumber(info.like_count)} 赞`);
   appendMeta(ICONS.layers, `${info.resolutions?.length || 0} 种清晰度`);
+  if (info.subtitle_count > 0) appendMeta(ICONS.subtitle, `${info.subtitle_count} 种字幕`);
   if (info.has_audio === false) appendMeta(ICONS.info, "无音轨");
 
   els.videoHeight.replaceChildren();
@@ -252,6 +270,7 @@ function renderInfo(info) {
   }
   els.coverQuality.value = thumbs.some((item) => item.id === "maxres") ? "maxres" : (thumbs[0]?.id || "hq");
   updateCoverPreview();
+  renderSubtitleLanguages(info);
   updateDownloadAvailability();
 }
 
@@ -325,6 +344,152 @@ function updateCoverPreview() {
   }
 }
 
+const languageNames = (() => {
+  try {
+    return new Intl.DisplayNames(["zh-CN"], { type: "language" });
+  } catch {
+    return null;
+  }
+})();
+
+function subtitleDisplayName(code) {
+  let lookup = String(code || "").replace(/-orig$/i, "");
+  if (/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]+)*-[a-z]{2,3}$/.test(lookup)) {
+    lookup = lookup.split("-").slice(0, -1).join("-") || lookup;
+  }
+  try {
+    const name = languageNames?.of(lookup);
+    if (name && name !== lookup) {
+      return String(code).endsWith("-orig") ? `${name}（原音）` : name;
+    }
+  } catch {
+    // Fall back to the raw language code below.
+  }
+  return code;
+}
+
+function renderSubtitleLanguages(info) {
+  els.subtitleLanguages.replaceChildren();
+  els.subtitleSearch.value = "";
+  els.subtitleShowTranslated.checked = false;
+  els.subtitleNoMatch.hidden = true;
+
+  const languages = Array.isArray(info.subtitle_languages) ? info.subtitle_languages : [];
+  const manual = languages.filter((item) => item.kind === "manual");
+  const auto = languages.filter((item) => item.kind === "auto");
+  const translated = auto.filter((item) => item.translated);
+
+  manual.sort((a, b) => subtitleDisplayName(a.code).localeCompare(subtitleDisplayName(b.code), "zh-CN"));
+  auto.sort((a, b) => {
+    if (Boolean(a.translated) !== Boolean(b.translated)) return a.translated ? 1 : -1;
+    return subtitleDisplayName(a.code).localeCompare(subtitleDisplayName(b.code), "zh-CN");
+  });
+
+  els.subtitleTranslatedCount.textContent = translated.length ? `（${translated.length}）` : "";
+  els.subtitleTranslatedWrap.hidden = translated.length === 0;
+
+  if (!languages.length) {
+    const empty = document.createElement("div");
+    empty.className = "subtitle-empty";
+    empty.textContent = "该视频没有可用字幕。";
+    els.subtitleLanguages.appendChild(empty);
+    updateSubtitleSummary();
+    return;
+  }
+
+  const manualCodes = new Set(manual.map((item) => item.code));
+  const autoCodes = new Set(auto.map((item) => item.code));
+  const preferences = ["zh-Hans", "zh-CN", "zh-Hant", "zh-TW", "zh", "en"];
+  const defaultCode =
+    preferences.find((code) => manualCodes.has(code))
+    || preferences.find((code) => autoCodes.has(code))
+    || manual[0]?.code
+    || auto[0]?.code
+    || "";
+
+  for (const language of [...manual, ...auto]) {
+    const name = subtitleDisplayName(language.code);
+    const row = document.createElement("label");
+    row.className = "subtitle-row";
+    row.dataset.search = `${language.code} ${name}`.toLowerCase();
+    row.dataset.translated = language.translated ? "1" : "0";
+    row.title = `${name} · ${language.code}`;
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = language.code;
+    checkbox.dataset.kind = language.kind;
+    checkbox.dataset.translated = language.translated ? "1" : "0";
+    checkbox.checked = language.code === defaultCode;
+
+    const code = document.createElement("span");
+    code.className = "subtitle-code";
+    code.textContent = language.code;
+
+    const label = document.createElement("span");
+    label.className = "subtitle-name";
+    label.textContent = name;
+
+    const badges = document.createElement("span");
+    badges.className = "subtitle-badges";
+    const kindBadge = document.createElement("span");
+    kindBadge.className = `subtitle-badge ${language.kind === "manual" ? "manual" : "auto"}`;
+    kindBadge.textContent = language.kind === "manual" ? "人工" : "自动";
+    badges.appendChild(kindBadge);
+    if (language.translated) {
+      const translatedBadge = document.createElement("span");
+      translatedBadge.className = "subtitle-badge translated";
+      translatedBadge.textContent = "翻译";
+      badges.appendChild(translatedBadge);
+    }
+
+    row.append(checkbox, code, label, badges);
+    els.subtitleLanguages.appendChild(row);
+  }
+
+  filterSubtitleLanguages();
+  updateSubtitleSummary();
+}
+
+function filterSubtitleLanguages() {
+  const query = els.subtitleSearch.value.trim().toLowerCase();
+  const showTranslated = els.subtitleShowTranslated.checked;
+  const rows = [...els.subtitleLanguages.querySelectorAll(".subtitle-row")];
+  let visible = 0;
+  for (const row of rows) {
+    const isTranslated = row.dataset.translated === "1";
+    const matches = !query || row.dataset.search.includes(query);
+    const checked = Boolean(row.querySelector('input[type="checkbox"]')?.checked);
+    const allowed = !isTranslated || showTranslated || Boolean(query) || checked;
+    row.hidden = !(matches && allowed);
+    if (!row.hidden) visible += 1;
+  }
+  els.subtitleNoMatch.hidden = visible > 0 || rows.length === 0;
+}
+
+function selectedSubtitleCheckboxes() {
+  return [...els.subtitleLanguages.querySelectorAll('input[type="checkbox"]:checked')];
+}
+
+function updateSubtitleSummary() {
+  if (!state.info) return;
+  const selected = selectedSubtitleCheckboxes();
+  const tooMany = selected.length > 20;
+  els.subtitleSelectedCount.textContent = selected.length ? `已选 ${selected.length} 种` : "未选择";
+  const hasLanguages = (state.info.subtitle_languages || []).length > 0;
+  els.subtitleSummary.textContent = !hasLanguages
+    ? "该视频没有可用字幕"
+    : tooMany
+      ? "一次最多选择 20 种语言"
+      : selected.length
+        ? `将下载 ${selected.length} 个 ${els.subtitleFormat.value.toUpperCase()} 文件`
+        : "选择语言后可下载，最多 20 种";
+  els.subtitleDownloadBtn.querySelector(".btn-label").textContent = selected.length
+    ? `下载字幕（${selected.length}）`
+    : "下载字幕";
+  updateDownloadAvailability();
+}
+
 function updateDownloadAvailability() {
   if (!state.info) return;
   const ffmpegOk = state.health?.ffmpeg?.available !== false;
@@ -333,8 +498,13 @@ function updateDownloadAvailability() {
   els.videoDownloadBtn.disabled = !hasVideo || (!ffmpegOk && !muted);
   els.audioDownloadBtn.disabled = state.info.has_audio === false || !ffmpegOk;
   els.coverDownloadBtn.disabled = false;
+  const subtitleCount = selectedSubtitleCheckboxes().length;
+  els.subtitleDownloadBtn.disabled = !ffmpegOk || subtitleCount === 0 || subtitleCount > 20;
   els.videoDownloadBtn.title = !ffmpegOk && !muted
     ? "需要 FFmpeg 才能合并音轨；可勾选「仅画面」或安装 FFmpeg"
+    : "";
+  els.subtitleDownloadBtn.title = !ffmpegOk
+    ? "字幕格式转换需要 FFmpeg"
     : "";
 }
 
@@ -349,6 +519,10 @@ async function startDownload(kind) {
   }
   if (kind === "video" && !ffmpegOk && !els.mutedToggle.checked) {
     toast("合并音轨需要 FFmpeg；也可以勾选「仅画面」后下载。", "error");
+    return;
+  }
+  if (kind === "subtitle" && !ffmpegOk) {
+    toast("字幕格式转换需要 FFmpeg，请先安装。", "error");
     return;
   }
 
@@ -368,9 +542,25 @@ async function startDownload(kind) {
     }
   } else if (kind === "thumbnail") {
     payload.thumb_quality = els.coverQuality.value;
+  } else if (kind === "subtitle") {
+    const selected = selectedSubtitleCheckboxes();
+    if (!selected.length) {
+      toast("请至少选择一种字幕语言。", "info");
+      return;
+    }
+    payload.languages = selected.map((checkbox) => checkbox.value);
+    payload.manual_languages = selected.filter((checkbox) => checkbox.dataset.kind === "manual").map((checkbox) => checkbox.value);
+    payload.auto_languages = selected.filter((checkbox) => checkbox.dataset.kind === "auto").map((checkbox) => checkbox.value);
+    payload.subtitle_format = els.subtitleFormat.value;
   }
 
-  const button = kind === "video" ? els.videoDownloadBtn : kind === "audio" ? els.audioDownloadBtn : els.coverDownloadBtn;
+  const button = kind === "video"
+    ? els.videoDownloadBtn
+    : kind === "audio"
+      ? els.audioDownloadBtn
+      : kind === "subtitle"
+        ? els.subtitleDownloadBtn
+        : els.coverDownloadBtn;
   state.downloadBusy.add(kind);
   setButtonLoading(button, true);
 
@@ -435,7 +625,7 @@ function handleJobs(jobs, notify) {
       if (!old) continue;
       if (old.status !== job.status) {
         if (job.status === "completed") {
-          toast(`下载完成：${job.filename || job.title}`, "success");
+          toast(job.warning ? `部分完成：${job.warning}` : `下载完成：${job.filename || job.title}`, job.warning ? "info" : "success");
         } else if (job.status === "failed") {
           toast(job.error || `「${job.title}」下载失败`, "error");
         }
@@ -446,7 +636,7 @@ function handleJobs(jobs, notify) {
   state.jobsLoaded = true;
   renderJobs();
   const active = jobs.filter((job) => ["queued", "downloading", "processing", "cancelling"].includes(job.status)).length;
-  document.title = active ? `(${active}) 下载中 · YT Grab` : "YT Grab · YouTube 视频 / 音频 / 封面下载器";
+  document.title = active ? `(${active}) 下载中 · YT Grab` : "YT Grab · YouTube 视频下载器";
 }
 
 function renderJobs() {
@@ -458,7 +648,7 @@ function renderJobs() {
           <svg viewBox="0 0 24 24" fill="none"><path d="M4 7.2A2.2 2.2 0 0 1 6.2 5h3.5l1.8 2h6.3A2.2 2.2 0 0 1 20 9.2v8.6A2.2 2.2 0 0 1 17.8 20H6.2A2.2 2.2 0 0 1 4 17.8V7.2Z" stroke="currentColor" stroke-width="1.5"/><path d="M8.5 13.2h7M12 9.8v6.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         </span>
         <p>队列还是空的</p>
-        <span>解析视频后，选择视频、音频或封面开始下载。</span>
+        <span>解析视频后，选择视频、音频、字幕或封面开始下载。</span>
       </div>`;
     return;
   }
@@ -466,7 +656,7 @@ function renderJobs() {
 }
 
 function renderJob(job) {
-  const kind = ["video", "audio", "thumbnail", "muted"].includes(job.kind) ? job.kind : "video";
+  const kind = ["video", "audio", "thumbnail", "muted", "subtitle"].includes(job.kind) ? job.kind : "video";
   const active = ["queued", "downloading", "processing", "cancelling"].includes(job.status);
   const progress = clamp(Number(job.progress) || 0, 0, 100);
   const meta = jobMeta(job);
@@ -486,6 +676,9 @@ function renderJob(job) {
         ${job.error_detail ? `<details><summary>技术详情</summary><pre>${escapeHtml(job.error_detail)}</pre></details>` : ""}
       </div>`
     : "";
+  const warningBlock = job.warning
+    ? `<div class="job-warning">${escapeHtml(job.warning)}</div>`
+    : "";
 
   return `<article class="queue-item job-${kind} status-${escapeHtml(job.status)}">
     <span class="job-icon" aria-hidden="true">${icon}</span>
@@ -496,6 +689,7 @@ function renderJob(job) {
       </div>
       <div class="job-meta">${meta}</div>
       ${errorBlock}
+      ${warningBlock}
     </div>
     <div class="job-actions">${actions}</div>
     <div class="job-progress"><progress max="100" value="${isDone ? 100 : progress}" aria-label="下载进度 ${Math.round(progress)}%"></progress></div>
@@ -526,12 +720,14 @@ function jobMeta(job) {
     if (job.eta) parts.push(`<span>剩余 ${formatEta(job.eta)}</span>`);
     else if (job.total > 0) parts.push(`<span>${formatBytes(job.downloaded)} / ${formatBytes(job.total)}</span>`);
   } else if (job.status === "processing") {
-    parts.push("<span>合并音轨 / 转换格式，请稍候</span>");
+    parts.push(`<span>${job.kind === "subtitle" ? "正在转换字幕…" : "合并音轨 / 转换格式，请稍候"}</span>`);
   } else if (job.status === "queued") {
     parts.push("<span>等待空闲下载位</span>");
   } else if (job.status === "completed") {
-    const size = job.files?.[0]?.size || 0;
+    const files = Array.isArray(job.files) ? job.files : [];
+    const size = files.reduce((total, file) => total + (Number(file.size) || 0), 0);
     if (size) parts.push(`<span>${formatBytes(size)}</span>`);
+    if (files.length > 1) parts.push(`<span>${files.length} 个文件</span>`);
     if (job.filename) parts.push(`<span title="${escapeHtml(job.filename)}">${escapeHtml(job.filename)}</span>`);
   } else if (job.status === "cancelled") {
     parts.push("<span>文件未保留</span>");
